@@ -1,52 +1,38 @@
 /*
-Autor: Fabian Chacón 201813154
-Tecnológico de Costa Rica
-Módulo: ALU
+Autor: Fabian Chacon 201813154
+Tecnologico de Costa Rica
+Modulo: ALU
 
-Descripción:
-Testbench para la unidad aritmética y lógica 8088. Valida operaciones
-aritméticas, lógicas, desplazamientos y el comportamiento de las banderas.
+Testbench SystemVerilog autochecking para la ALU del 8088.
+Incluye transacciones, Tester, Scoreboard y Cover Groups.
 */
 
 `timescale 1ns / 1ps
 
 `include "Circuito 3/ALU.v"
 
-module tb_ALU();
-    
-    // =========================================================================
-    // Señales de Control
-    // =========================================================================
-    reg CLK;
-    reg RST;
-    
-    // =========================================================================
-    // Señales de Entrada
-    // =========================================================================
-    reg [15:0] A;              // Dato de entrada
-    reg        V;              // Carry de entrada
-    reg [5:0]  op;             // Código de operación
-    reg        WA;             // Write Enable Registro A
-    reg        WB;             // Write Enable Registro B
-    reg        WD;             // Write Enable Registro D
-    reg        ENADi;          // Enable División
-    reg [1:0]  WR;             // Write FLAGS
-    reg [2:0]  opFL;           // Operación FLAGS
-    
-    // =========================================================================
-    // Señales de Salida
-    // =========================================================================
-    wire [15:0] R1;            // Resultado principal
-    wire [15:0] R2;            // Resultado secundario
-    wire [15:0] FLAGS;         // Registro completo de FLAGS
-    wire [5:0]  FL;            // FLAGS comprimidas
-    wire        FINP;          // Fin de división
-    wire        IF;            // Interrupt Flag
-    
-    // =========================================================================
-    // Instanciación del Módulo bajo Prueba
-    // =========================================================================
-    ALU uut (
+module tb_ALU;
+    localparam int NUM_RANDOM_TESTS = 160;
+
+    logic        CLK;
+    logic        RST;
+    logic [15:0] A;
+    logic        V;
+    logic [5:0]  op;
+    logic        WA;
+    logic        WB;
+    logic        WD;
+    logic        ENADi;
+    logic [1:0]  WR;
+    logic [2:0]  opFL;
+    wire  [15:0] R1;
+    wire  [15:0] R2;
+    wire  [15:0] FLAGS;
+    wire  [5:0]  FL;
+    wire         FINP;
+    wire         IF;
+
+    ALU dut (
         .CLK(CLK),
         .RST(RST),
         .A(A),
@@ -65,326 +51,369 @@ module tb_ALU();
         .FINP(FINP),
         .IF(IF)
     );
-    
-    // =========================================================================
-    // Generador de Reloj (50 MHz)
-    // =========================================================================
+
     initial begin
-        CLK = 0;
-        forever #10 CLK = ~CLK;
+        CLK = 1'b0;
+        forever #5 CLK = ~CLK;
     end
-    
-    // =========================================================================
-    // Procedimiento Principal de Prueba
-    // =========================================================================
-    initial begin
-        // Configuración del waveform para visualización
-        $dumpfile("tb_ALU.vcd");
-        $dumpvars(0, tb_ALU);
-        
-        // Inicialización de señales
-        RST = 1'b1;
-        A = 16'h0000;
-        V = 1'b0;
-        op = 6'b000000;
+
+    class alu_tx;
+        rand bit [15:0] opa;
+        rand bit [15:0] opb;
+        rand bit [15:0] opd;
+        rand bit [5:0]  opcode;
+        rand bit        carry_in;
+        rand bit [1:0]  wr_flags;
+        rand bit [2:0]  op_flags;
+
+        constraint supported_ops {
+            opcode inside {
+                6'b000000, 6'b000001, 6'b000010, 6'b000011,
+                6'b000100, 6'b000101, 6'b000110, 6'b000111,
+                6'b001000, 6'b001001, 6'b001100, 6'b001101,
+                6'b001110, 6'b001111
+            };
+        }
+
+        constraint useful_counts {
+            if (opcode[4:3] == 2'b01) opb[15:4] == 12'h000;
+            if (opcode[4:3] == 2'b01) opb[3:0] inside {[1:4]};
+        }
+
+        constraint flag_activity {
+            wr_flags dist {2'b00 := 5, 2'b01 := 4, 2'b10 := 1};
+            op_flags dist {3'b000 := 6, [3'b001:3'b111] := 1};
+        }
+    endclass
+
+    class scoreboard;
+        bit [15:0] reg_a;
+        bit [15:0] reg_b;
+        bit [15:0] reg_d;
+        bit [15:0] flags_model;
+        int checks;
+        int errors;
+
+        function new();
+            reset();
+        endfunction
+
+        function void reset();
+            reg_a = 16'h0000;
+            reg_b = 16'h0000;
+            reg_d = 16'h0000;
+            flags_model = 16'h0000;
+        endfunction
+
+        function bit parity_even(input bit [15:0] value);
+            parity_even = ~^value[7:0];
+        endfunction
+
+        function bit [15:0] rol16(input bit [15:0] value, input int count);
+            int c;
+            c = count % 16;
+            rol16 = (value << c) | (value >> (16 - c));
+        endfunction
+
+        function bit [15:0] ror16(input bit [15:0] value, input int count);
+            int c;
+            c = count % 16;
+            ror16 = (value >> c) | (value << (16 - c));
+        endfunction
+
+        function bit [16:0] addsub17(input bit [15:0] a, input bit [15:0] b,
+                                     input bit sub, input bit carry);
+            if (sub) begin
+                addsub17 = {1'b0, a} + {1'b0, ~b} + 17'd1 + {16'h0000, carry};
+            end else begin
+                addsub17 = {1'b0, a} + {1'b0, b} + {16'h0000, carry};
+            end
+        endfunction
+
+        function bit [15:0] expected_result(input alu_tx tx);
+            bit [16:0] wide;
+            int count;
+
+            count = tx.opb[3:0];
+            unique case (tx.opcode)
+                6'b000000: begin wide = addsub17(tx.opa, tx.opb, 1'b0, 1'b0); expected_result = wide[15:0]; end
+                6'b000001: expected_result = tx.opa | tx.opb;
+                6'b000010: begin wide = addsub17(tx.opa, tx.opb, 1'b0, flags_model[0]); expected_result = wide[15:0]; end
+                6'b000011: begin wide = addsub17(tx.opa, tx.opb, 1'b1, flags_model[0]); expected_result = wide[15:0]; end
+                6'b000100: expected_result = tx.opa & tx.opb;
+                6'b000101: begin wide = addsub17(tx.opa, tx.opb, 1'b1, 1'b0); expected_result = wide[15:0]; end
+                6'b000110: expected_result = tx.opa ^ tx.opb;
+                6'b000111: begin wide = addsub17(tx.opa, tx.opb, 1'b1, 1'b0); expected_result = wide[15:0]; end
+                6'b001000: expected_result = rol16(tx.opa, count);
+                6'b001001: expected_result = ror16(tx.opa, count);
+                6'b001100: expected_result = tx.opa << count;
+                6'b001101: expected_result = tx.opa >> count;
+                6'b001110: expected_result = tx.opa << count;
+                6'b001111: expected_result = $signed(tx.opa) >>> count;
+                default:   expected_result = 16'h0000;
+            endcase
+        endfunction
+
+        function bit expected_cf(input alu_tx tx, input bit [15:0] result);
+            bit [16:0] wide;
+            int count;
+
+            count = tx.opb[3:0];
+            unique case (tx.opcode)
+                6'b000000: begin wide = addsub17(tx.opa, tx.opb, 1'b0, 1'b0); expected_cf = wide[16]; end
+                6'b000010: begin wide = addsub17(tx.opa, tx.opb, 1'b0, flags_model[0]); expected_cf = wide[16]; end
+                6'b000101,
+                6'b000111: expected_cf = (tx.opa < tx.opb);
+                6'b001100,
+                6'b001110: expected_cf = (count == 0) ? flags_model[0] : tx.opa[16 - count];
+                6'b001101,
+                6'b001111: expected_cf = (count == 0) ? flags_model[0] : tx.opa[count - 1];
+                6'b001000: expected_cf = result[0];
+                6'b001001: expected_cf = result[15];
+                default:   expected_cf = 1'b0;
+            endcase
+        endfunction
+
+        function void update_flags(input alu_tx tx, input bit [15:0] result);
+            bit cf;
+            bit of_bit;
+
+            cf = expected_cf(tx, result);
+            of_bit = tx.opa[15] ^ result[15];
+
+            if (tx.wr_flags[0] || tx.wr_flags[1]) begin
+                if (tx.wr_flags[1]) begin
+                    flags_model[0] = tx.opa[0];
+                    flags_model[2] = tx.opa[2];
+                    flags_model[4] = tx.opa[4];
+                    flags_model[6] = tx.opa[6];
+                    flags_model[7] = tx.opa[7];
+                    flags_model[11] = tx.opa[11];
+                end else begin
+                    flags_model[0] = cf;
+                    flags_model[2] = parity_even(result);
+                    flags_model[4] = 1'b0;
+                    flags_model[6] = (result == 16'h0000);
+                    flags_model[7] = result[15];
+                    flags_model[11] = of_bit;
+                end
+            end
+
+            unique case (tx.op_flags)
+                3'b001: flags_model[0] = 1'b0;
+                3'b010: flags_model[10] = 1'b0;
+                3'b011: flags_model[9] = 1'b0;
+                3'b100: flags_model[0] = 1'b1;
+                3'b101: flags_model[10] = 1'b1;
+                3'b110: flags_model[9] = 1'b1;
+                3'b111: flags_model[0] = ~flags_model[0];
+                default: ;
+            endcase
+
+            flags_model[1] = 1'b0;
+            flags_model[3] = 1'b0;
+            flags_model[5] = 1'b0;
+            flags_model[8] = 1'b0;
+            flags_model[12] = 1'b0;
+            flags_model[13] = 1'b0;
+            flags_model[14] = 1'b0;
+            flags_model[15] = 1'b0;
+        endfunction
+
+        function void check(input alu_tx tx, input bit [15:0] actual_r1, input bit [15:0] actual_flags);
+            bit [15:0] exp_r1;
+
+            exp_r1 = expected_result(tx);
+            checks++;
+
+            if (actual_r1 !== exp_r1) begin
+                errors++;
+                $error("[SCOREBOARD][R1] op=%06b A=%04h B=%04h esperado=%04h obtenido=%04h",
+                       tx.opcode, tx.opa, tx.opb, exp_r1, actual_r1);
+            end
+
+            update_flags(tx, exp_r1);
+
+            if (actual_flags[0] !== flags_model[0] ||
+                actual_flags[6] !== flags_model[6] ||
+                actual_flags[7] !== flags_model[7]) begin
+                errors++;
+                $error("[SCOREBOARD][FLAGS] esperado CF/ZF/SF=%0b/%0b/%0b obtenido=%0b/%0b/%0b",
+                       flags_model[0], flags_model[6], flags_model[7],
+                       actual_flags[0], actual_flags[6], actual_flags[7]);
+            end
+        endfunction
+    endclass
+
+    class tester;
+        mailbox #(alu_tx) outbox;
+
+        function new(input mailbox #(alu_tx) outbox);
+            this.outbox = outbox;
+        endfunction
+
+        task run(input int count);
+            alu_tx tx;
+
+            repeat (count) begin
+                tx = new();
+                assert(tx.randomize())
+                    else $fatal(1, "No se pudo randomizar alu_tx");
+                outbox.put(tx);
+            end
+        endtask
+    endclass
+
+    covergroup cg_alu @(posedge CLK);
+        option.per_instance = 1;
+        cp_op: coverpoint op {
+            bins alu1[] = {
+                6'b000000, 6'b000001, 6'b000010, 6'b000011,
+                6'b000100, 6'b000101, 6'b000110, 6'b000111
+            };
+            bins alu2[] = {
+                6'b001000, 6'b001001, 6'b001100, 6'b001101,
+                6'b001110, 6'b001111
+            };
+        }
+        cp_wr: coverpoint WR {
+            bins none = {2'b00};
+            bins basic = {2'b01};
+            bins full = {2'b10};
+            bins load_basic = {2'b11};
+        }
+        cp_opa: coverpoint A {
+            bins zero = {16'h0000};
+            bins ones = {16'hFFFF};
+            bins sign_edge = {16'h7FFF, 16'h8000};
+            bins others = default;
+        }
+        cp_flags: coverpoint {FLAGS[0], FLAGS[6], FLAGS[7]} {
+            bins flag_states[] = {[3'b000:3'b111]};
+        }
+        x_op_flags: cross cp_op, cp_wr;
+    endgroup
+
+    mailbox #(alu_tx) tx_mbx;
+    scoreboard sb;
+    tester tst;
+    cg_alu cov;
+
+    task automatic idle_controls();
         WA = 1'b0;
         WB = 1'b0;
         WD = 1'b0;
-        ENADi = 1'b0;
         WR = 2'b00;
-        opFL = 3'b000;
-        
-        #20;  // Esperar a que se estabilice el reloj
+        ENADi = 1'b0;
+    endtask
+
+    task automatic load_reg(input bit wa, input bit wb, input bit wd, input bit [15:0] value);
+        @(posedge CLK);
+        A  = value;
+        WA = wa;
+        WB = wb;
+        WD = wd;
+        @(negedge CLK);
+        #1;
+        idle_controls();
+    endtask
+
+    task automatic drive_tx(input alu_tx tx);
+        load_reg(1'b1, 1'b0, 1'b0, tx.opa);
+        load_reg(1'b0, 1'b1, 1'b0, tx.opb);
+        load_reg(1'b0, 1'b0, 1'b1, tx.opd);
+
+        @(posedge CLK);
+        A      = tx.opa;
+        V      = tx.carry_in;
+        op     = tx.opcode;
+        WR     = tx.wr_flags;
+        opFL   = tx.op_flags;
+        ENADi  = 1'b0;
+        @(negedge CLK);
+        #2;
+        sb.check(tx, R1, FLAGS);
+        idle_controls();
+    endtask
+
+    task automatic apply_reset();
+        RST   = 1'b1;
+        A     = 16'h0000;
+        V     = 1'b0;
+        op    = 6'b000000;
+        opFL  = 3'b000;
+        idle_controls();
+        repeat (3) @(posedge CLK);
         RST = 1'b0;
-        
-        $display("\n========================================");
-        $display("TESTBENCH: UNIDAD ARITMETICA Y LOGICA");
-        $display("========================================\n");
-        
-        // Ejecutar casos de prueba
-        test_reset();
-        test_operaciones_aritmeticas();
-        test_operaciones_logicas();
-        test_operaciones_desplazamiento();
-        test_banderas_basicas();
-        test_banderas_aritmeticas();
-        
-        // Mensaje de finalización
-        #20;
-        $display("\n========================================");
-        $display("SIMULACION COMPLETADA");
-        $display("========================================\n");
-        
+        sb.reset();
+        @(posedge CLK);
+    endtask
+
+    task automatic directed_tests();
+        alu_tx tx;
+        bit [5:0] ops [14] = '{
+            6'b000000, 6'b000001, 6'b000010, 6'b000011,
+            6'b000100, 6'b000101, 6'b000110, 6'b000111,
+            6'b001000, 6'b001001, 6'b001100, 6'b001101,
+            6'b001110, 6'b001111
+        };
+
+        foreach (ops[i]) begin
+            tx = new();
+            tx.opa      = (i < 8) ? 16'h00F0 + i : 16'h8001 >> (i % 4);
+            tx.opb      = (i < 8) ? 16'h0003 + i : 16'h0001 + (i % 3);
+            tx.opd      = 16'h0000;
+            tx.opcode   = ops[i];
+            tx.carry_in = 1'b0;
+            tx.wr_flags = 2'b01;
+            tx.op_flags = 3'b000;
+            drive_tx(tx);
+        end
+
+        tx = new();
+        tx.opa      = 16'hFFFF;
+        tx.opb      = 16'h0001;
+        tx.opd      = 16'h0000;
+        tx.opcode   = 6'b000000;
+        tx.carry_in = 1'b0;
+        tx.wr_flags = 2'b01;
+        tx.op_flags = 3'b000;
+        drive_tx(tx);
+    endtask
+
+    initial begin
+        alu_tx tx;
+
+        $dumpfile("tb_ALU.vcd");
+        $dumpvars(0, tb_ALU);
+
+        tx_mbx = new();
+        sb = new();
+        tst = new(tx_mbx);
+        cov = new();
+
+        apply_reset();
+        directed_tests();
+
+        fork
+            tst.run(NUM_RANDOM_TESTS);
+            begin
+                repeat (NUM_RANDOM_TESTS) begin
+                    tx_mbx.get(tx);
+                    drive_tx(tx);
+                end
+            end
+        join
+
+        $display("Checks ALU: %0d, errores: %0d, cobertura: %.2f%%",
+                 sb.checks, sb.errors, cov.get_coverage());
+
+        if (sb.errors == 0) begin
+            $display("RESULTADO ALU: PASS");
+        end else begin
+            $fatal(1, "RESULTADO ALU: FAIL con %0d errores", sb.errors);
+        end
+
         $finish;
     end
-    
-    // =========================================================================
-    // PROCEDIMIENTO 1: Verificar Reset
-    // =========================================================================
-    task test_reset();
-        begin
-            $display("\n--- PRUEBA 1: RESET DEL SISTEMA ---");
-            $display("Todos los registros y FLAGS deben estar en cero");
-            
-            // Verificar FLAGS después del reset
-            #10;
-            $display("  FLAGS=%h (esperado: 0000)", FLAGS);
-            $display("  R1=%h (esperado: 0000)", R1);
-            $display("  FL=%h (esperado: 000000)", FL);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 2: Operaciones Aritméticas
-    // =========================================================================
-    task test_operaciones_aritmeticas();
-        begin
-            $display("\n--- PRUEBA 2: OPERACIONES ARITMETICAS ---");
-            
-            // ADD: 0x0005 + 0x0003 = 0x0008
-            $display("\n  ADD: 0x0005 + 0x0003");
-            A = 16'h0005;
-            WA = 1'b1;
-            WR = 2'b01;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h0003;
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000000;  // ADD
-            #20;
-            $display("    R1=%h (esperado: 0008)", R1);
-            $display("    CF=%b, ZF=%b", FLAGS[0], FLAGS[6]);
-            
-            // SUB: 0x0008 - 0x0003 = 0x0005
-            $display("\n  SUB: 0x0008 - 0x0003");
-            A = 16'h0008;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h0003;
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000101;  // SUB
-            #20;
-            $display("    R1=%h (esperado: 0005)", R1);
-            
-            // ADD con Carry: 0xFFFF + 0x0001 + CF
-            $display("\n  ADC: 0xFFFF + 0x0001 con CF=0");
-            A = 16'hFFFF;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h0001;
-            WB = 1'b1;
-            V = 1'b0;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000010;  // ADC
-            #20;
-            $display("    R1=%h (esperado: 0000)", R1);
-            $display("    CF=%b (esperado: 1), ZF=%b (esperado: 1)", FLAGS[0], FLAGS[6]);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 3: Operaciones Lógicas
-    // =========================================================================
-    task test_operaciones_logicas();
-        begin
-            $display("\n--- PRUEBA 3: OPERACIONES LOGICAS ---");
-            
-            // OR: 0x00FF | 0xFF00 = 0xFFFF
-            $display("\n  OR: 0x00FF | 0xFF00");
-            A = 16'h00FF;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'hFF00;
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000001;  // OR
-            #20;
-            $display("    R1=%h (esperado: ffff)", R1);
-            
-            // AND: 0xFFFF & 0x00FF = 0x00FF
-            $display("\n  AND: 0xFFFF & 0x00FF");
-            A = 16'hFFFF;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h00FF;
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000100;  // AND
-            #20;
-            $display("    R1=%h (esperado: 00ff)", R1);
-            
-            // XOR: 0xAAAA ^ 0x5555 = 0xFFFF
-            $display("\n  XOR: 0xAAAA ^ 0x5555");
-            A = 16'hAAAA;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h5555;
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000110;  // XOR
-            #20;
-            $display("    R1=%h (esperado: ffff)", R1);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 4: Operaciones de Desplazamiento
-    // =========================================================================
-    task test_operaciones_desplazamiento();
-        begin
-            $display("\n--- PRUEBA 4: OPERACIONES DE DESPLAZAMIENTO ---");
-            
-            // SHL: 0x0001 << 1 = 0x0002
-            $display("\n  SHL (Desplazar Izquierda): 0x0001 << 1");
-            A = 16'h0001;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h0001;  // Cantidad de desplazamiento
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b001100;  // SHL
-            #20;
-            $display("    R1=%h (esperado: 0002)", R1);
-            
-            // SHR: 0x0080 >> 1 = 0x0040
-            $display("\n  SHR (Desplazar Derecha): 0x0080 >> 1");
-            A = 16'h0080;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h0001;  // Cantidad de desplazamiento
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b001101;  // SHR
-            #20;
-            $display("    R1=%h (esperado: 0040)", R1);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 5: Banderas Básicas
-    // =========================================================================
-    task test_banderas_basicas();
-        begin
-            $display("\n--- PRUEBA 5: BANDERAS BASICAS ---");
-            
-            // Prueba ZF (Zero Flag)
-            $display("\n  Prueba ZF (Zero Flag):");
-            A = 16'h0005;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h0005;
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000101;  // SUB (5-5=0)
-            WR = 2'b01;
-            #20;
-            WR = 2'b00;
-            $display("    Operación: 0x0005 - 0x0005 = 0");
-            $display("    R1=%h, ZF=%b (esperado: 1)", R1, FLAGS[6]);
-            
-            // Prueba SF (Sign Flag)
-            $display("\n  Prueba SF (Sign Flag):");
-            A = 16'h0001;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h0005;
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000101;  // SUB (1-5=-4 = 0xFFFC)
-            WR = 2'b01;
-            #20;
-            WR = 2'b00;
-            $display("    Operación: 0x0001 - 0x0005 = 0xFFFC");
-            $display("    R1=%h, SF=%b (esperado: 1)", R1, FLAGS[7]);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 6: Banderas en Operaciones Aritméticas
-    // =========================================================================
-    task test_banderas_aritmeticas();
-        begin
-            $display("\n--- PRUEBA 6: BANDERAS EN OPERACIONES ARITMETICAS ---");
-            
-            // Prueba CF (Carry Flag) - Overflow sin signo
-            $display("\n  Prueba CF (Carry Flag):");
-            A = 16'hFFFF;
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h0001;
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000000;  // ADD (0xFFFF + 0x0001 = 0x0000 con CF=1)
-            WR = 2'b01;
-            #20;
-            WR = 2'b00;
-            $display("    Operación: 0xFFFF + 0x0001");
-            $display("    R1=%h, CF=%b, ZF=%b (esperado CF: 1, ZF: 1)", R1, FLAGS[0], FLAGS[6]);
-            
-            // Prueba OF (Overflow Flag) - Overflow con signo
-            $display("\n  Prueba OF (Overflow Flag):");
-            A = 16'h7FFF;  // Máximo positivo
-            WA = 1'b1;
-            #20;
-            WA = 1'b0;
-            
-            A = 16'h0001;
-            WB = 1'b1;
-            #20;
-            WB = 1'b0;
-            
-            op = 6'b000000;  // ADD (0x7FFF + 0x0001 overflow)
-            WR = 2'b01;
-            #20;
-            WR = 2'b00;
-            $display("    Operación: 0x7FFF + 0x0001");
-            $display("    R1=%h, OF=%b", R1, FLAGS[11]);
-        end
-    endtask
-    
 endmodule

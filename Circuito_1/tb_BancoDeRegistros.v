@@ -1,51 +1,37 @@
 /*
-Autor: Fabian Chacón 201813154
-Tecnológico de Costa Rica
-Módulo: BancoDeEjecucion
+Autor: Fabian Chacon 201813154
+Tecnologico de Costa Rica
+Modulo: BancoDeRegistros / BancoDeEjecucion
 
-Descripción:
-Testbench para el banco de registros 8088. Valida la escritura y lectura
-de registros de 8 y 16 bits, el reset y la detección de CX=0.
+Testbench SystemVerilog autochecking para el banco de registros del 8088.
+Incluye transacciones, Tester, Scoreboard y Cover Groups.
 */
 
 `timescale 1ns / 1ps
 
 `include "Circuito 1/BancoDeRegistros.v"
 
-module tb_BancoDeEjecucion();
-    
-    // =========================================================================
-    // Señales de Control
-    // =========================================================================
-    reg CLK;
-    reg RST;
-    
-    // =========================================================================
-    // Señales de Entrada
-    // =========================================================================
-    reg [15:0] A;              // Dato de entrada para escritura
-    reg [7:0]  DatoIN;         // Dato de 8 bits (interrupciones)
-    reg [23:0] DESP;           // Desplazamiento
-    reg [1:0]  mod;            // Modo de direccionamiento
-    reg [2:0]  RM;             // Registro/Memoria
-    reg [3:0]  opER;           // Operando de lectura
-    reg [3:0]  opEW;           // Operando de escritura
-    reg        WR;             // Write Enable
-    reg        LDI;            // Load Instruction
-    reg [3:0]  DirST;          // Dirección Stack
-    reg [2:0]  SelIn;          // Selección Interrupción
-    
-    // =========================================================================
-    // Señales de Salida
-    // =========================================================================
-    wire [15:0] R;             // Salida del registro leído
-    wire [15:0] RI;            // Salida de interfaz
-    wire        CXZ;            // Detector CX=0
-    
-    // =========================================================================
-    // Instanciación del Módulo bajo Prueba
-    // =========================================================================
-    BancoDeEjecucion uut (
+module tb_BancoDeEjecucion;
+    localparam int NUM_RANDOM_TESTS = 180;
+
+    logic        CLK;
+    logic        RST;
+    logic [15:0] A;
+    logic [7:0]  DatoIN;
+    logic [23:0] DESP;
+    logic [1:0]  mod;
+    logic [2:0]  RM;
+    logic [3:0]  opER;
+    logic [3:0]  opEW;
+    logic        WR;
+    logic        LDI;
+    logic [3:0]  DirST;
+    logic [2:0]  SelIn;
+    wire  [15:0] R;
+    wire  [15:0] RI;
+    wire         CXZ;
+
+    BancoDeEjecucion dut (
         .CLK(CLK),
         .RST(RST),
         .A(A),
@@ -63,277 +49,305 @@ module tb_BancoDeEjecucion();
         .RI(RI),
         .CXZ(CXZ)
     );
-    
-    // =========================================================================
-    // Generador de Reloj (50 MHz)
-    // =========================================================================
+
     initial begin
-        CLK = 0;
-        forever #10 CLK = ~CLK;
+        CLK = 1'b0;
+        forever #5 CLK = ~CLK;
     end
-    
-    // =========================================================================
-    // Procedimiento de Inicialización
-    // =========================================================================
+
+    class banco_tx;
+        rand bit [15:0] data;
+        rand bit [7:0]  dato_in;
+        rand bit [23:0] desp;
+        rand bit [1:0]  mode;
+        rand bit [2:0]  rm;
+        rand bit [3:0]  read_sel;
+        rand bit [3:0]  write_sel;
+        rand bit        wr_en;
+        rand bit        ldi_en;
+        rand bit [3:0]  dir_st;
+        rand bit [2:0]  sel_in;
+
+        constraint useful_controls {
+            wr_en  dist {1 := 7, 0 := 3};
+            ldi_en dist {1 := 2, 0 := 8};
+        }
+    endclass
+
+    class scoreboard;
+        bit [7:0]  ah, al, bh_live, bl_live, ch, cl, dh, dl;
+        bit [15:0] sp, bp_live, si_live, di_live;
+        bit [7:0]  bh_latch, bl_latch;
+        bit [15:0] bp_latch, si_latch, di_latch;
+        bit [15:0] ea_latch;
+        bit [7:0]  dato_latch;
+        int checks;
+        int errors;
+
+        function new();
+            reset();
+        endfunction
+
+        function void reset();
+            ah = 8'h00; al = 8'h00; bh_live = 8'h00; bl_live = 8'h00;
+            ch = 8'h00; cl = 8'h00; dh = 8'h00; dl = 8'h00;
+            sp = 16'h0000; bp_live = 16'h0000; si_live = 16'h0000; di_live = 16'h0000;
+            bh_latch = 8'h00; bl_latch = 8'h00;
+            bp_latch = 16'h0000; si_latch = 16'h0000; di_latch = 16'h0000;
+            ea_latch = 16'h0000; dato_latch = 8'h00;
+        endfunction
+
+        function void predict(input banco_tx tx);
+            if (tx.wr_en) begin
+                unique case (tx.write_sel)
+                    4'h0: al = tx.data[7:0];
+                    4'h1: cl = tx.data[7:0];
+                    4'h2: dl = tx.data[7:0];
+                    4'h3: bl_live = tx.data[7:0];
+                    4'h4: ah = tx.data[7:0];
+                    4'h5: ch = tx.data[7:0];
+                    4'h6: dh = tx.data[7:0];
+                    4'h7: bh_live = tx.data[7:0];
+                    4'h8: begin ah = tx.data[15:8]; al = tx.data[7:0]; end
+                    4'h9: begin ch = tx.data[15:8]; cl = tx.data[7:0]; end
+                    4'hA: begin dh = tx.data[15:8]; dl = tx.data[7:0]; end
+                    4'hB: begin bh_live = tx.data[15:8]; bl_live = tx.data[7:0]; end
+                    4'hC: sp = tx.data;
+                    4'hD: bp_live = tx.data;
+                    4'hE: si_live = tx.data;
+                    4'hF: di_live = tx.data;
+                endcase
+            end
+
+            if (tx.ldi_en) begin
+                di_latch = di_live;
+                si_latch = si_live;
+                bp_latch = bp_live;
+                bh_latch = bh_live;
+                bl_latch = bl_live;
+                ea_latch = tx.data;
+                dato_latch = tx.dato_in;
+            end
+        endfunction
+
+        function bit [15:0] expected_r(input bit [3:0] sel);
+            unique case (sel)
+                4'h0: expected_r = {8'h00, al};
+                4'h1: expected_r = {8'h00, cl};
+                4'h2: expected_r = {8'h00, dl};
+                4'h3: expected_r = {8'h00, bl_latch};
+                4'h4: expected_r = {8'h00, ah};
+                4'h5: expected_r = {8'h00, ch};
+                4'h6: expected_r = {8'h00, dh};
+                4'h7: expected_r = {8'h00, bh_latch};
+                4'h8: expected_r = {ah, al};
+                4'h9: expected_r = {ch, cl};
+                4'hA: expected_r = {dh, dl};
+                4'hB: expected_r = {bh_live, bl_live};
+                4'hC: expected_r = sp;
+                4'hD: expected_r = bp_live;
+                4'hE: expected_r = si_live;
+                4'hF: expected_r = di_live;
+            endcase
+        endfunction
+
+        function bit expected_cxz();
+            expected_cxz = ({ch, cl} == 16'h0000);
+        endfunction
+
+        function void check(input banco_tx tx, input bit [15:0] actual_r, input bit actual_cxz);
+            bit [15:0] exp_r;
+            bit exp_cxz;
+
+            exp_r = expected_r(tx.read_sel);
+            exp_cxz = expected_cxz();
+            checks++;
+
+            if (actual_r !== exp_r) begin
+                errors++;
+                $error("[SCOREBOARD][R] opER=%0h esperado=%04h obtenido=%04h", tx.read_sel, exp_r, actual_r);
+            end
+
+            if (actual_cxz !== exp_cxz) begin
+                errors++;
+                $error("[SCOREBOARD][CXZ] esperado=%0b obtenido=%0b", exp_cxz, actual_cxz);
+            end
+        endfunction
+    endclass
+
+    class tester;
+        mailbox #(banco_tx) outbox;
+
+        function new(input mailbox #(banco_tx) outbox);
+            this.outbox = outbox;
+        endfunction
+
+        task run(input int count);
+            banco_tx tx;
+
+            repeat (count) begin
+                tx = new();
+                assert(tx.randomize())
+                    else $fatal(1, "No se pudo randomizar banco_tx");
+                outbox.put(tx);
+            end
+        endtask
+    endclass
+
+    covergroup cg_banco @(posedge CLK);
+        option.per_instance = 1;
+        cp_read: coverpoint opER {
+            bins all_regs[] = {[4'h0:4'hF]};
+        }
+        cp_write: coverpoint opEW {
+            bins all_regs[] = {[4'h0:4'hF]};
+        }
+        cp_wr: coverpoint WR {
+            bins idle = {0};
+            bins active = {1};
+        }
+        cp_ldi: coverpoint LDI {
+            bins idle = {0};
+            bins active = {1};
+        }
+        cp_cxz: coverpoint CXZ {
+            bins zero = {1};
+            bins non_zero = {0};
+        }
+        cp_mode: coverpoint mod;
+        cp_rm: coverpoint RM;
+        cp_dir: coverpoint DirST;
+        x_write_enable: cross cp_write, cp_wr;
+        x_read_write: cross cp_read, cp_write;
+    endgroup
+
+    mailbox #(banco_tx) tx_mbx;
+    scoreboard sb;
+    tester tst;
+    cg_banco cov;
+
+    task automatic drive_tx(input banco_tx tx);
+        @(posedge CLK);
+        A      = tx.data;
+        DatoIN = tx.dato_in;
+        DESP   = tx.desp;
+        mod    = tx.mode;
+        RM     = tx.rm;
+        opER   = tx.read_sel;
+        opEW   = tx.write_sel;
+        WR     = tx.wr_en;
+        LDI    = tx.ldi_en;
+        DirST  = tx.dir_st;
+        SelIn  = tx.sel_in;
+        @(negedge CLK);
+        #1;
+        sb.predict(tx);
+        WR  = 1'b0;
+        LDI = 1'b0;
+        #1;
+        sb.check(tx, R, CXZ);
+    endtask
+
+    task automatic apply_reset();
+        RST    = 1'b1;
+        A      = 16'h0000;
+        DatoIN = 8'h00;
+        DESP   = 24'h000000;
+        mod    = 2'b00;
+        RM     = 3'b000;
+        opER   = 4'h0;
+        opEW   = 4'h0;
+        WR     = 1'b0;
+        LDI    = 1'b0;
+        DirST  = 4'h0;
+        SelIn  = 3'h0;
+        repeat (3) @(posedge CLK);
+        RST = 1'b0;
+        sb.reset();
+        @(posedge CLK);
+    endtask
+
+    task automatic directed_tests();
+        banco_tx tx;
+
+        for (int i = 0; i < 16; i++) begin
+            tx = new();
+            tx.data      = 16'h1000 + i;
+            tx.dato_in   = 8'h40 + i;
+            tx.desp      = 24'h000100 + i;
+            tx.mode      = i;
+            tx.rm        = i;
+            tx.read_sel  = i;
+            tx.write_sel = i;
+            tx.wr_en     = 1'b1;
+            tx.ldi_en    = (i == 3 || i == 7 || i >= 13);
+            tx.dir_st    = i;
+            tx.sel_in    = i;
+            drive_tx(tx);
+        end
+
+        tx = new();
+        tx.data      = 16'h0000;
+        tx.dato_in   = 8'h00;
+        tx.desp      = 24'h000000;
+        tx.mode      = 2'b00;
+        tx.rm        = 3'b000;
+        tx.read_sel  = 4'h9;
+        tx.write_sel = 4'h9;
+        tx.wr_en     = 1'b1;
+        tx.ldi_en    = 1'b0;
+        tx.dir_st    = 4'h0;
+        tx.sel_in    = 3'h0;
+        drive_tx(tx);
+
+        tx = new();
+        tx.data      = 16'hCAFE;
+        tx.dato_in   = 8'h00;
+        tx.desp      = 24'h000000;
+        tx.mode      = 2'b00;
+        tx.rm        = 3'b000;
+        tx.read_sel  = 4'h9;
+        tx.write_sel = 4'h9;
+        tx.wr_en     = 1'b1;
+        tx.ldi_en    = 1'b0;
+        tx.dir_st    = 4'h0;
+        tx.sel_in    = 3'h0;
+        drive_tx(tx);
+    endtask
+
     initial begin
-        // Configuración del waveform para visualización
+        banco_tx tx;
+
         $dumpfile("tb_BancoDeEjecucion.vcd");
         $dumpvars(0, tb_BancoDeEjecucion);
-        
-        // Inicialización de señales
-        RST = 1'b1;
-        A = 16'h0000;
-        DatoIN = 8'h00;
-        DESP = 24'h000000;
-        mod = 2'b00;
-        RM = 3'b000;
-        opER = 4'h0;
-        opEW = 4'h0;
-        WR = 1'b0;
-        LDI = 1'b0;
-        DirST = 4'h0;
-        SelIn = 3'h0;
-        
-        #20;  // Esperar a que se estabilice el reloj
-        RST = 1'b0;
-        
-        $display("\n========================================");
-        $display("TESTBENCH: BANCO DE EJECUCION");
-        $display("========================================\n");
-        
-        // Ejecutar casos de prueba
-        test_reset();
-        test_escritura_lectura_8bits();
-        test_escritura_lectura_16bits();
-        test_detector_cxz();
-        test_multiple_escrituras();
-        
-        // Mensaje de finalización
-        #20;
-        $display("\n========================================");
-        $display("SIMULACION COMPLETADA");
-        $display("========================================\n");
-        
+
+        tx_mbx = new();
+        sb = new();
+        tst = new(tx_mbx);
+        cov = new();
+
+        apply_reset();
+        directed_tests();
+
+        fork
+            tst.run(NUM_RANDOM_TESTS);
+            begin
+                repeat (NUM_RANDOM_TESTS) begin
+                    tx_mbx.get(tx);
+                    drive_tx(tx);
+                end
+            end
+        join
+
+        $display("Checks BancoDeEjecucion: %0d, errores: %0d, cobertura: %.2f%%",
+                 sb.checks, sb.errors, cov.get_coverage());
+
+        if (sb.errors == 0) begin
+            $display("RESULTADO BancoDeEjecucion: PASS");
+        end else begin
+            $fatal(1, "RESULTADO BancoDeEjecucion: FAIL con %0d errores", sb.errors);
+        end
+
         $finish;
     end
-    
-    // =========================================================================
-    // PROCEDIMIENTO 1: Verificar Reset
-    // =========================================================================
-    task test_reset();
-        begin
-            $display("\n--- PRUEBA 1: RESET DEL SISTEMA ---");
-            $display("Todos los registros deben contener 0x0000");
-            
-            // Leer AL
-            opER = 4'h0;  // AL
-            #10;
-            $display("  Ciclo 1: opER=AL(0x00), R=%h (esperado: 0000)", R);
-            
-            // Leer AX
-            opER = 4'h8;  // AX
-            #10;
-            $display("  Ciclo 2: opER=AX(0x08), R=%h (esperado: 0000)", R);
-            
-            // Verificar que CXZ = 1 (CX = 0 después del reset)
-            #10;
-            $display("  Ciclo 3: CXZ=%b (esperado: 1, porque CX=0)", CXZ);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 2: Escribir y Leer Registros de 8 bits
-    // =========================================================================
-    task test_escritura_lectura_8bits();
-        begin
-            $display("\n--- PRUEBA 2: ESCRITURA/LECTURA REGISTROS 8 BITS ---");
-            
-            // Escribir en AL (opEW = 0x0)
-            $display("\n  Escritura en AL con valor 0xAB:");
-            A = 16'h00AB;
-            opEW = 4'h0;
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Leer AL
-            $display("  Lectura de AL:");
-            opER = 4'h0;  // AL
-            #10;
-            $display("    R=%h (esperado: 00ab)", R);
-            
-            // Escribir en AH (opEW = 0x4)
-            $display("\n  Escritura en AH con valor 0xCD:");
-            A = 16'h00CD;
-            opEW = 4'h4;
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Leer AX (debe mostrar AH:AL = CD:AB)
-            $display("  Lectura de AX (AH:AL):");
-            opER = 4'h8;  // AX
-            #10;
-            $display("    R=%h (esperado: cdab)", R);
-            
-            // Escribir en BL
-            $display("\n  Escritura en BL con valor 0x12:");
-            A = 16'h0012;
-            opEW = 4'h3;
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Leer BL
-            opER = 4'h3;  // BL
-            #10;
-            $display("  Lectura de BL:");
-            $display("    R=%h (esperado: 0012)", R);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 3: Escribir y Leer Registros de 16 bits
-    // =========================================================================
-    task test_escritura_lectura_16bits();
-        begin
-            $display("\n--- PRUEBA 3: ESCRITURA/LECTURA REGISTROS 16 BITS ---");
-            
-            // Escribir en SP (opEW = 0xC)
-            $display("\n  Escritura en SP con valor 0x1234:");
-            A = 16'h1234;
-            opEW = 4'hC;
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Leer SP
-            opER = 4'hC;  // SP
-            #10;
-            $display("  Lectura de SP:");
-            $display("    R=%h (esperado: 1234)", R);
-            
-            // Escribir en BP (opEW = 0xD)
-            $display("\n  Escritura en BP con valor 0x5678:");
-            A = 16'h5678;
-            opEW = 4'hD;
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Leer BP
-            opER = 4'hD;  // BP
-            #10;
-            $display("  Lectura de BP:");
-            $display("    R=%h (esperado: 5678)", R);
-            
-            // Escribir en SI y DI
-            $display("\n  Escritura en SI con valor 0xAAAA:");
-            A = 16'hAAAA;
-            opEW = 4'hE;
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            $display("  Escritura en DI con valor 0xBBBB:");
-            A = 16'hBBBB;
-            opEW = 4'hF;
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Verificar lecturas
-            opER = 4'hE;  // SI
-            #10;
-            $display("  Lectura de SI:");
-            $display("    R=%h (esperado: aaaa)", R);
-            
-            opER = 4'hF;  // DI
-            #10;
-            $display("  Lectura de DI:");
-            $display("    R=%h (esperado: bbbb)", R);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 4: Detector de CX = 0
-    // =========================================================================
-    task test_detector_cxz();
-        begin
-            $display("\n--- PRUEBA 4: DETECTOR CX=0 (CXZ) ---");
-            
-            // CX debería ser 0 inicialmente
-            $display("\n  Estado inicial (CX=0):");
-            #10;
-            $display("    CXZ=%b (esperado: 1)", CXZ);
-            
-            // Escribir CX con valor no cero (opEW = 0x9)
-            $display("\n  Escritura en CX con valor 0xFFFF:");
-            A = 16'hFFFF;
-            opEW = 4'h9;
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            #10;
-            $display("    CXZ=%b (esperado: 0, porque CX≠0)", CXZ);
-            
-            // Escribir CX con cero nuevamente
-            $display("\n  Escritura en CX con valor 0x0000:");
-            A = 16'h0000;
-            opEW = 4'h9;
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            #10;
-            $display("    CXZ=%b (esperado: 1, porque CX=0)", CXZ);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 5: Múltiples Escrituras Secuenciales
-    // =========================================================================
-    task test_multiple_escrituras();
-        begin
-            $display("\n--- PRUEBA 5: ESCRITURAS MULTIPLES SECUENCIALES ---");
-            
-            // Secuencia: cargar AX, BX, DX con valores diferentes
-            $display("\n  Secuencia de escrituras:");
-            
-            A = 16'h1111;
-            opEW = 4'h8;  // AX
-            WR = 1'b1;
-            #20;
-            $display("    Ciclo 1: AX <- 0x1111");
-            
-            A = 16'h2222;
-            opEW = 4'hB;  // BX
-            #20;
-            $display("    Ciclo 2: BX <- 0x2222");
-            
-            A = 16'h3333;
-            opEW = 4'hA;  // DX
-            #20;
-            $display("    Ciclo 3: DX <- 0x3333");
-            
-            WR = 1'b0;
-            #20;
-            
-            // Verificar las escrituras
-            $display("\n  Verificación de valores:");
-            opER = 4'h8;  // AX
-            #10;
-            $display("    AX=%h (esperado: 1111)", R);
-            
-            opER = 4'hB;  // BX
-            #10;
-            $display("    BX=%h (esperado: 2222)", R);
-            
-            opER = 4'hA;  // DX
-            #10;
-            $display("    DX=%h (esperado: 3333)", R);
-        end
-    endtask
-    
 endmodule

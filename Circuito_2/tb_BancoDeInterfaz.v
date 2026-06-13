@@ -1,44 +1,29 @@
 /*
-Autor: Fabian Chacón 201813154
-Tecnológico de Costa Rica
-Módulo: BancoDeInterfaz
+Autor: Fabian Chacon 201813154
+Tecnologico de Costa Rica
+Modulo: BancoDeInterfaz
 
-Descripción:
-Testbench para el banco de segmentos 8088. Comprueba lecturas de ES, CS,
-SS y DS, escritura de segmentos y la lectura dual simultánea.
+Testbench SystemVerilog autochecking para el banco de registros de segmento.
+Incluye transacciones aleatorias, Tester, Scoreboard y Cover Groups.
 */
-
 
 `timescale 1ns / 1ps
 
 `include "Circuito 2/BancoDeInterfaz.v"
 
-module tb_BancoDeInterfaz();
-    
-    // =========================================================================
-    // Señales de Control
-    // =========================================================================
-    reg CLK;
-    reg RST;
-    
-    // =========================================================================
-    // Señales de Entrada
-    // =========================================================================
-    reg [15:0] A;              // Dato de entrada para escritura
-    reg [1:0]  opE;            // Selector de lectura ejecución
-    reg [1:0]  opI;            // Selector de lectura interfaz
-    reg        WR;             // Write Enable
-    
-    // =========================================================================
-    // Señales de Salida
-    // =========================================================================
-    wire [15:0] RE;            // Salida lectura ejecución
-    wire [15:0] RI;            // Salida lectura interfaz
-    
-    // =========================================================================
-    // Instanciación del Módulo bajo Prueba
-    // =========================================================================
-    BancoDeInterfaz uut (
+module tb_BancoDeInterfaz;
+    localparam int NUM_RANDOM_TESTS = 120;
+
+    logic        CLK;
+    logic        RST;
+    logic [15:0] A;
+    logic [1:0]  opE;
+    logic [1:0]  opI;
+    logic        WR;
+    wire  [15:0] RE;
+    wire  [15:0] RI;
+
+    BancoDeInterfaz dut (
         .CLK(CLK),
         .RST(RST),
         .A(A),
@@ -48,262 +33,198 @@ module tb_BancoDeInterfaz();
         .RE(RE),
         .RI(RI)
     );
-    
-    // =========================================================================
-    // Generador de Reloj (50 MHz)
-    // =========================================================================
+
     initial begin
-        CLK = 0;
-        forever #10 CLK = ~CLK;
+        CLK = 1'b0;
+        forever #5 CLK = ~CLK;
     end
-    
-    // =========================================================================
-    // Procedimiento Principal de Prueba
-    // =========================================================================
-    initial begin
-        // Configuración del waveform para visualización
-        $dumpfile("tb_BancoDeInterfaz.vcd");
-        $dumpvars(0, tb_BancoDeInterfaz);
-        
-        // Inicialización de señales
+
+    class segmento_tx;
+        rand bit [15:0] data;
+        rand bit [1:0]  sel_e;
+        rand bit [1:0]  sel_i;
+        rand bit        wr_en;
+
+        constraint useful_writes {
+            wr_en dist {1 := 7, 0 := 3};
+        }
+    endclass
+
+    class scoreboard;
+        bit [15:0] model [4];
+        int checks;
+        int errors;
+
+        function new();
+            reset();
+        endfunction
+
+        function void reset();
+            foreach (model[i]) model[i] = 16'h0000;
+        endfunction
+
+        function void predict(input segmento_tx tx);
+            if (tx.wr_en) begin
+                model[tx.sel_e] = tx.data;
+            end
+        endfunction
+
+        function void check(input segmento_tx tx, input bit [15:0] actual_re, input bit [15:0] actual_ri);
+            bit [15:0] exp_re;
+            bit [15:0] exp_ri;
+
+            exp_re = model[tx.sel_e];
+            exp_ri = model[tx.sel_i];
+            checks++;
+
+            if (actual_re !== exp_re) begin
+                errors++;
+                $error("[SCOREBOARD][RE] opE=%0d esperado=%04h obtenido=%04h", tx.sel_e, exp_re, actual_re);
+            end
+
+            if (actual_ri !== exp_ri) begin
+                errors++;
+                $error("[SCOREBOARD][RI] opI=%0d esperado=%04h obtenido=%04h", tx.sel_i, exp_ri, actual_ri);
+            end
+        endfunction
+    endclass
+
+    class tester;
+        mailbox #(segmento_tx) outbox;
+
+        function new(input mailbox #(segmento_tx) outbox);
+            this.outbox = outbox;
+        endfunction
+
+        task run(input int count);
+            segmento_tx tx;
+
+            repeat (count) begin
+                tx = new();
+                assert(tx.randomize())
+                    else $fatal(1, "No se pudo randomizar segmento_tx");
+                outbox.put(tx);
+            end
+        endtask
+    endclass
+
+    covergroup cg_segmentos @(posedge CLK);
+        option.per_instance = 1;
+        cp_opE: coverpoint opE {
+            bins ES = {2'b00};
+            bins CS = {2'b01};
+            bins SS = {2'b10};
+            bins DS = {2'b11};
+        }
+        cp_opI: coverpoint opI {
+            bins ES = {2'b00};
+            bins CS = {2'b01};
+            bins SS = {2'b10};
+            bins DS = {2'b11};
+        }
+        cp_wr: coverpoint WR {
+            bins read = {0};
+            bins write = {1};
+        }
+        cp_data: coverpoint A {
+            bins zero = {16'h0000};
+            bins ones = {16'hFFFF};
+            bins low_values = {[16'h0001:16'h00FF]};
+            bins high_values = {[16'hFF00:16'hFFFE]};
+            bins others = default;
+        }
+        x_read_ports: cross cp_opE, cp_opI;
+        x_write_target: cross cp_opE, cp_wr;
+    endgroup
+
+    mailbox #(segmento_tx) tx_mbx;
+    scoreboard sb;
+    tester tst;
+    cg_segmentos cov;
+
+    task automatic drive_tx(input segmento_tx tx);
+        @(posedge CLK);
+        A   = tx.data;
+        opE = tx.sel_e;
+        opI = tx.sel_i;
+        WR  = tx.wr_en;
+        @(negedge CLK);
+        #1;
+        sb.predict(tx);
+        WR = 1'b0;
+        #1;
+        sb.check(tx, RE, RI);
+    endtask
+
+    task automatic apply_reset();
         RST = 1'b1;
-        A = 16'h0000;
+        A   = 16'h0000;
         opE = 2'b00;
         opI = 2'b00;
-        WR = 1'b0;
-        
-        #20;  // Esperar a que se estabilice el reloj
+        WR  = 1'b0;
+        repeat (3) @(posedge CLK);
         RST = 1'b0;
-        
-        $display("\n========================================");
-        $display("TESTBENCH: BANCO DE INTERFAZ");
-        $display("========================================\n");
-        
-        // Ejecutar casos de prueba
-        test_reset();
-        test_escritura_lectura_individual();
-        test_lectura_dual_simultanea();
-        test_independencia_puertos();
-        test_escritura_multiple();
-        
-        // Mensaje de finalización
-        #20;
-        $display("\n========================================");
-        $display("SIMULACION COMPLETADA");
-        $display("========================================\n");
-        
+        sb.reset();
+        @(posedge CLK);
+    endtask
+
+    task automatic directed_tests();
+        segmento_tx tx;
+
+        for (int i = 0; i < 4; i++) begin
+            tx = new();
+            tx.data  = 16'h1111 * (i + 1);
+            tx.sel_e = i;
+            tx.sel_i = 3 - i;
+            tx.wr_en = 1'b1;
+            drive_tx(tx);
+        end
+
+        for (int e = 0; e < 4; e++) begin
+            for (int r = 0; r < 4; r++) begin
+                tx = new();
+                tx.data  = 16'h0000;
+                tx.sel_e = e;
+                tx.sel_i = r;
+                tx.wr_en = 1'b0;
+                drive_tx(tx);
+            end
+        end
+    endtask
+
+    initial begin
+        segmento_tx tx;
+
+        $dumpfile("tb_BancoDeInterfaz.vcd");
+        $dumpvars(0, tb_BancoDeInterfaz);
+
+        tx_mbx = new();
+        sb = new();
+        tst = new(tx_mbx);
+        cov = new();
+
+        apply_reset();
+        directed_tests();
+
+        fork
+            tst.run(NUM_RANDOM_TESTS);
+            begin
+                repeat (NUM_RANDOM_TESTS) begin
+                    tx_mbx.get(tx);
+                    drive_tx(tx);
+                end
+            end
+        join
+
+        $display("Checks BancoDeInterfaz: %0d, errores: %0d, cobertura: %.2f%%",
+                 sb.checks, sb.errors, cov.get_coverage());
+
+        if (sb.errors == 0) begin
+            $display("RESULTADO BancoDeInterfaz: PASS");
+        end else begin
+            $fatal(1, "RESULTADO BancoDeInterfaz: FAIL con %0d errores", sb.errors);
+        end
+
         $finish;
     end
-    
-    // =========================================================================
-    // PROCEDIMIENTO 1: Verificar Reset
-    // =========================================================================
-    task test_reset();
-        begin
-            $display("\n--- PRUEBA 1: RESET DEL SISTEMA ---");
-            $display("Todos los registros deben contener 0x0000");
-            
-            // Verificar ES
-            opE = 2'b00;  // ES
-            #10;
-            $display("  opE=ES(00), RE=%h (esperado: 0000)", RE);
-            
-            // Verificar CS
-            opE = 2'b01;  // CS
-            #10;
-            $display("  opE=CS(01), RE=%h (esperado: 0000)", RE);
-            
-            // Verificar SS
-            opE = 2'b10;  // SS
-            #10;
-            $display("  opE=SS(10), RE=%h (esperado: 0000)", RE);
-            
-            // Verificar DS
-            opE = 2'b11;  // DS
-            #10;
-            $display("  opE=DS(11), RE=%h (esperado: 0000)", RE);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 2: Escritura y Lectura Individual de Segmentos
-    // =========================================================================
-    task test_escritura_lectura_individual();
-        begin
-            $display("\n--- PRUEBA 2: ESCRITURA/LECTURA INDIVIDUAL ---");
-            
-            // Escribir en ES
-            $display("\n  Escribir ES = 0x1111:");
-            A = 16'h1111;
-            opE = 2'b00;  // ES
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Leer ES
-            #10;
-            $display("  Leer ES: RE=%h (esperado: 1111)", RE);
-            
-            // Escribir en CS
-            $display("\n  Escribir CS = 0x2222:");
-            A = 16'h2222;
-            opE = 2'b01;  // CS
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Leer CS
-            opE = 2'b01;
-            #10;
-            $display("  Leer CS: RE=%h (esperado: 2222)", RE);
-            
-            // Escribir en SS
-            $display("\n  Escribir SS = 0x3333:");
-            A = 16'h3333;
-            opE = 2'b10;  // SS
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Leer SS
-            opE = 2'b10;
-            #10;
-            $display("  Leer SS: RE=%h (esperado: 3333)", RE);
-            
-            // Escribir en DS
-            $display("\n  Escribir DS = 0x4444:");
-            A = 16'h4444;
-            opE = 2'b11;  // DS
-            WR = 1'b1;
-            #20;
-            WR = 1'b0;
-            
-            // Leer DS
-            opE = 2'b11;
-            #10;
-            $display("  Leer DS: RE=%h (esperado: 4444)", RE);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 3: Lectura Dual Simultánea
-    // =========================================================================
-    task test_lectura_dual_simultanea();
-        begin
-            $display("\n--- PRUEBA 3: LECTURA DUAL SIMULTÁNEA ---");
-            $display("Los dos puertos pueden leer independientemente");
-            
-            // Leer CS desde RE y DS desde RI simultáneamente
-            $display("\n  opE=CS(01), opI=DS(11):");
-            opE = 2'b01;
-            opI = 2'b11;
-            #10;
-            $display("    RE=%h (esperado: 2222 - valor de CS)", RE);
-            $display("    RI=%h (esperado: 4444 - valor de DS)", RI);
-            
-            // Leer SS desde RE y ES desde RI simultáneamente
-            $display("\n  opE=SS(10), opI=ES(00):");
-            opE = 2'b10;
-            opI = 2'b00;
-            #10;
-            $display("    RE=%h (esperado: 3333 - valor de SS)", RE);
-            $display("    RI=%h (esperado: 1111 - valor de ES)", RI);
-            
-            // Leer el mismo registro desde ambos puertos
-            $display("\n  opE=CS(01), opI=CS(01) (mismo registro):");
-            opE = 2'b01;
-            opI = 2'b01;
-            #10;
-            $display("    RE=%h, RI=%h (ambos esperado: 2222)", RE, RI);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 4: Independencia de Puertos de Lectura
-    // =========================================================================
-    task test_independencia_puertos();
-        begin
-            $display("\n--- PRUEBA 4: INDEPENDENCIA DE PUERTOS ---");
-            $display("Los puertos de lectura son independientes del puerto de escritura");
-            
-            // Cambiar el valor de opE mientras leemos con opI
-            $display("\n  Lectura de ES en opI mientras opE cambia:");
-            opI = 2'b00;  // Leer ES
-            opE = 2'b01;  // Escribir en CS
-            #10;
-            $display("    RI=%h (esperado: 1111 - ES)", RI);
-            
-            // Leer datos del puerto de interfaz
-            $display("\n  Lectura múltiple secuencial de RI:");
-            opI = 2'b00;  // ES
-            #10;
-            $display("    opI=ES(00), RI=%h (esperado: 1111)", RI);
-            
-            opI = 2'b01;  // CS
-            #10;
-            $display("    opI=CS(01), RI=%h (esperado: 2222)", RI);
-            
-            opI = 2'b10;  // SS
-            #10;
-            $display("    opI=SS(10), RI=%h (esperado: 3333)", RI);
-            
-            opI = 2'b11;  // DS
-            #10;
-            $display("    opI=DS(11), RI=%h (esperado: 4444)", RI);
-        end
-    endtask
-    
-    // =========================================================================
-    // PROCEDIMIENTO 5: Escritura Múltiple Secuencial
-    // =========================================================================
-    task test_escritura_multiple();
-        begin
-            $display("\n--- PRUEBA 5: ESCRITURA MÚLTIPLE SECUENCIAL ---");
-            $display("Cambiar valores y verificar actualización");
-            
-            // Secuencia de escrituras
-            $display("\n  Secuencia de escrituras:");
-            
-            A = 16'hAAAA;
-            opE = 2'b00;  // ES
-            WR = 1'b1;
-            #20;
-            $display("    Ciclo 1: ES <- 0xAAAA");
-            
-            A = 16'hBBBB;
-            opE = 2'b01;  // CS
-            #20;
-            $display("    Ciclo 2: CS <- 0xBBBB");
-            
-            A = 16'hCCCC;
-            opE = 2'b10;  // SS
-            #20;
-            $display("    Ciclo 3: SS <- 0xCCCC");
-            
-            A = 16'hDDDD;
-            opE = 2'b11;  // DS
-            #20;
-            WR = 1'b0;
-            $display("    Ciclo 4: DS <- 0xDDDD");
-            
-            // Verificar todos los valores escritos
-            $display("\n  Verificación de valores escritos:");
-            opE = 2'b00;
-            #10;
-            $display("    ES=%h (esperado: aaaa)", RE);
-            
-            opE = 2'b01;
-            #10;
-            $display("    CS=%h (esperado: bbbb)", RE);
-            
-            opE = 2'b10;
-            #10;
-            $display("    SS=%h (esperado: cccc)", RE);
-            
-            opE = 2'b11;
-            #10;
-            $display("    DS=%h (esperado: dddd)", RE);
-        end
-    endtask
-    
 endmodule

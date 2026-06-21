@@ -11,9 +11,13 @@ Incluye transacciones, Tester, Scoreboard y Cover Groups.
 
 `include "Circuito 1/BancoDeRegistros.v"
 
-module tb_BancoDeEjecucion;
-    localparam int NUM_RANDOM_TESTS = 180;
+typedef struct packed {
+    bit [15:0] r;
+    bit [15:0] ri;
+    bit        cxz;
+} banco_sample_t;
 
+interface banco_registros_if;
     logic        CLK;
     logic        RST;
     logic [15:0] A;
@@ -27,33 +31,64 @@ module tb_BancoDeEjecucion;
     logic        LDI;
     logic [3:0]  DirST;
     logic [2:0]  SelIn;
-    wire  [15:0] R;
-    wire  [15:0] RI;
-    wire         CXZ;
-
-    BancoDeEjecucion dut (
-        .CLK(CLK),
-        .RST(RST),
-        .A(A),
-        .DatoIN(DatoIN),
-        .DESP(DESP),
-        .mod(mod),
-        .RM(RM),
-        .opER(opER),
-        .opEW(opEW),
-        .WR(WR),
-        .LDI(LDI),
-        .DirST(DirST),
-        .SelIn(SelIn),
-        .R(R),
-        .RI(RI),
-        .CXZ(CXZ)
-    );
+    logic [15:0] R;
+    logic [15:0] RI;
+    logic        CXZ;
 
     initial begin
         CLK = 1'b0;
         forever #5 CLK = ~CLK;
     end
+
+    task automatic set_idle();
+        A      = 16'h0000;
+        DatoIN = 8'h00;
+        DESP   = 24'h000000;
+        mod    = 2'b00;
+        RM     = 3'b000;
+        opER   = 4'h0;
+        opEW   = 4'h0;
+        WR     = 1'b0;
+        LDI    = 1'b0;
+        DirST  = 4'h0;
+        SelIn  = 3'h0;
+    endtask
+
+    function automatic banco_sample_t sample();
+        sample.r   = R;
+        sample.ri  = RI;
+        sample.cxz = CXZ;
+    endfunction
+
+    modport dut (
+        input  CLK, RST, A, DatoIN, DESP, mod, RM, opER, opEW, WR, LDI, DirST, SelIn,
+        output R, RI, CXZ
+    );
+endinterface
+
+module tb_BancoDeEjecucion;
+    localparam int NUM_RANDOM_TESTS = 180;
+
+    banco_registros_if bus();
+
+    BancoDeEjecucion dut (
+        .CLK(bus.CLK),
+        .RST(bus.RST),
+        .A(bus.A),
+        .DatoIN(bus.DatoIN),
+        .DESP(bus.DESP),
+        .mod(bus.mod),
+        .RM(bus.RM),
+        .opER(bus.opER),
+        .opEW(bus.opEW),
+        .WR(bus.WR),
+        .LDI(bus.LDI),
+        .DirST(bus.DirST),
+        .SelIn(bus.SelIn),
+        .R(bus.R),
+        .RI(bus.RI),
+        .CXZ(bus.CXZ)
+    );
 
     class banco_tx;
         rand bit [15:0] data;
@@ -155,7 +190,7 @@ module tb_BancoDeEjecucion;
             expected_cxz = ({ch, cl} == 16'h0000);
         endfunction
 
-        function void check(input banco_tx tx, input bit [15:0] actual_r, input bit actual_cxz);
+        function void check(input banco_tx tx, input banco_sample_t actual);
             bit [15:0] exp_r;
             bit exp_cxz;
 
@@ -163,14 +198,14 @@ module tb_BancoDeEjecucion;
             exp_cxz = expected_cxz();
             checks++;
 
-            if (actual_r !== exp_r) begin
+            if (actual.r !== exp_r) begin
                 errors++;
-                $error("[SCOREBOARD][R] opER=%0h esperado=%04h obtenido=%04h", tx.read_sel, exp_r, actual_r);
+                $error("[SCOREBOARD][R] opER=%0h esperado=%04h obtenido=%04h", tx.read_sel, exp_r, actual.r);
             end
 
-            if (actual_cxz !== exp_cxz) begin
+            if (actual.cxz !== exp_cxz) begin
                 errors++;
-                $error("[SCOREBOARD][CXZ] esperado=%0b obtenido=%0b", exp_cxz, actual_cxz);
+                $error("[SCOREBOARD][CXZ] esperado=%0b obtenido=%0b", exp_cxz, actual.cxz);
             end
         endfunction
     endclass
@@ -194,29 +229,29 @@ module tb_BancoDeEjecucion;
         endtask
     endclass
 
-    covergroup cg_banco @(posedge CLK);
+    covergroup cg_banco @(posedge bus.CLK);
         option.per_instance = 1;
-        cp_read: coverpoint opER {
+        cp_read: coverpoint bus.opER {
             bins all_regs[] = {[4'h0:4'hF]};
         }
-        cp_write: coverpoint opEW {
+        cp_write: coverpoint bus.opEW {
             bins all_regs[] = {[4'h0:4'hF]};
         }
-        cp_wr: coverpoint WR {
+        cp_wr: coverpoint bus.WR {
             bins idle = {0};
             bins active = {1};
         }
-        cp_ldi: coverpoint LDI {
+        cp_ldi: coverpoint bus.LDI {
             bins idle = {0};
             bins active = {1};
         }
-        cp_cxz: coverpoint CXZ {
+        cp_cxz: coverpoint bus.CXZ {
             bins zero = {1};
             bins non_zero = {0};
         }
-        cp_mode: coverpoint mod;
-        cp_rm: coverpoint RM;
-        cp_dir: coverpoint DirST;
+        cp_mode: coverpoint bus.mod;
+        cp_rm: coverpoint bus.RM;
+        cp_dir: coverpoint bus.DirST;
         x_write_enable: cross cp_write, cp_wr;
         x_read_write: cross cp_read, cp_write;
     endgroup
@@ -227,44 +262,34 @@ module tb_BancoDeEjecucion;
     cg_banco cov;
 
     task automatic drive_tx(input banco_tx tx);
-        @(posedge CLK);
-        A      = tx.data;
-        DatoIN = tx.dato_in;
-        DESP   = tx.desp;
-        mod    = tx.mode;
-        RM     = tx.rm;
-        opER   = tx.read_sel;
-        opEW   = tx.write_sel;
-        WR     = tx.wr_en;
-        LDI    = tx.ldi_en;
-        DirST  = tx.dir_st;
-        SelIn  = tx.sel_in;
-        @(negedge CLK);
+        @(posedge bus.CLK);
+        bus.A      = tx.data;
+        bus.DatoIN = tx.dato_in;
+        bus.DESP   = tx.desp;
+        bus.mod    = tx.mode;
+        bus.RM     = tx.rm;
+        bus.opER   = tx.read_sel;
+        bus.opEW   = tx.write_sel;
+        bus.WR     = tx.wr_en;
+        bus.LDI    = tx.ldi_en;
+        bus.DirST  = tx.dir_st;
+        bus.SelIn  = tx.sel_in;
+        @(negedge bus.CLK);
         #1;
         sb.predict(tx);
-        WR  = 1'b0;
-        LDI = 1'b0;
+        bus.WR  = 1'b0;
+        bus.LDI = 1'b0;
         #1;
-        sb.check(tx, R, CXZ);
+        sb.check(tx, bus.sample());
     endtask
 
     task automatic apply_reset();
-        RST    = 1'b1;
-        A      = 16'h0000;
-        DatoIN = 8'h00;
-        DESP   = 24'h000000;
-        mod    = 2'b00;
-        RM     = 3'b000;
-        opER   = 4'h0;
-        opEW   = 4'h0;
-        WR     = 1'b0;
-        LDI    = 1'b0;
-        DirST  = 4'h0;
-        SelIn  = 3'h0;
-        repeat (3) @(posedge CLK);
-        RST = 1'b0;
+        bus.RST = 1'b1;
+        bus.set_idle();
+        repeat (3) @(posedge bus.CLK);
+        bus.RST = 1'b0;
         sb.reset();
-        @(posedge CLK);
+        @(posedge bus.CLK);
     endtask
 
     task automatic directed_tests();

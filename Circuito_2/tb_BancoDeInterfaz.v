@@ -11,33 +11,59 @@ Incluye transacciones aleatorias, Tester, Scoreboard y Cover Groups.
 
 `include "Circuito 2/BancoDeInterfaz.v"
 
-module tb_BancoDeInterfaz;
-    localparam int NUM_RANDOM_TESTS = 120;
+typedef struct packed {
+    bit [15:0] re;
+    bit [15:0] ri;
+} segmento_sample_t;
 
+interface banco_interfaz_if;
     logic        CLK;
     logic        RST;
     logic [15:0] A;
     logic [1:0]  opE;
     logic [1:0]  opI;
     logic        WR;
-    wire  [15:0] RE;
-    wire  [15:0] RI;
-
-    BancoDeInterfaz dut (
-        .CLK(CLK),
-        .RST(RST),
-        .A(A),
-        .opE(opE),
-        .opI(opI),
-        .WR(WR),
-        .RE(RE),
-        .RI(RI)
-    );
+    logic [15:0] RE;
+    logic [15:0] RI;
 
     initial begin
         CLK = 1'b0;
         forever #5 CLK = ~CLK;
     end
+
+    task automatic set_idle();
+        A   = 16'h0000;
+        opE = 2'b00;
+        opI = 2'b00;
+        WR  = 1'b0;
+    endtask
+
+    function automatic segmento_sample_t sample();
+        sample.re = RE;
+        sample.ri = RI;
+    endfunction
+
+    modport dut (
+        input  CLK, RST, A, opE, opI, WR,
+        output RE, RI
+    );
+endinterface
+
+module tb_BancoDeInterfaz;
+    localparam int NUM_RANDOM_TESTS = 120;
+
+    banco_interfaz_if bus();
+
+    BancoDeInterfaz dut (
+        .CLK(bus.CLK),
+        .RST(bus.RST),
+        .A(bus.A),
+        .opE(bus.opE),
+        .opI(bus.opI),
+        .WR(bus.WR),
+        .RE(bus.RE),
+        .RI(bus.RI)
+    );
 
     class segmento_tx;
         rand bit [15:0] data;
@@ -69,7 +95,7 @@ module tb_BancoDeInterfaz;
             end
         endfunction
 
-        function void check(input segmento_tx tx, input bit [15:0] actual_re, input bit [15:0] actual_ri);
+        function void check(input segmento_tx tx, input segmento_sample_t actual);
             bit [15:0] exp_re;
             bit [15:0] exp_ri;
 
@@ -77,14 +103,14 @@ module tb_BancoDeInterfaz;
             exp_ri = model[tx.sel_i];
             checks++;
 
-            if (actual_re !== exp_re) begin
+            if (actual.re !== exp_re) begin
                 errors++;
-                $error("[SCOREBOARD][RE] opE=%0d esperado=%04h obtenido=%04h", tx.sel_e, exp_re, actual_re);
+                $error("[SCOREBOARD][RE] opE=%0d esperado=%04h obtenido=%04h", tx.sel_e, exp_re, actual.re);
             end
 
-            if (actual_ri !== exp_ri) begin
+            if (actual.ri !== exp_ri) begin
                 errors++;
-                $error("[SCOREBOARD][RI] opI=%0d esperado=%04h obtenido=%04h", tx.sel_i, exp_ri, actual_ri);
+                $error("[SCOREBOARD][RI] opI=%0d esperado=%04h obtenido=%04h", tx.sel_i, exp_ri, actual.ri);
             end
         endfunction
     endclass
@@ -108,25 +134,25 @@ module tb_BancoDeInterfaz;
         endtask
     endclass
 
-    covergroup cg_segmentos @(posedge CLK);
+    covergroup cg_segmentos @(posedge bus.CLK);
         option.per_instance = 1;
-        cp_opE: coverpoint opE {
+        cp_opE: coverpoint bus.opE {
             bins ES = {2'b00};
             bins CS = {2'b01};
             bins SS = {2'b10};
             bins DS = {2'b11};
         }
-        cp_opI: coverpoint opI {
+        cp_opI: coverpoint bus.opI {
             bins ES = {2'b00};
             bins CS = {2'b01};
             bins SS = {2'b10};
             bins DS = {2'b11};
         }
-        cp_wr: coverpoint WR {
+        cp_wr: coverpoint bus.WR {
             bins read = {0};
             bins write = {1};
         }
-        cp_data: coverpoint A {
+        cp_data: coverpoint bus.A {
             bins zero = {16'h0000};
             bins ones = {16'hFFFF};
             bins low_values = {[16'h0001:16'h00FF]};
@@ -143,29 +169,26 @@ module tb_BancoDeInterfaz;
     cg_segmentos cov;
 
     task automatic drive_tx(input segmento_tx tx);
-        @(posedge CLK);
-        A   = tx.data;
-        opE = tx.sel_e;
-        opI = tx.sel_i;
-        WR  = tx.wr_en;
-        @(negedge CLK);
+        @(posedge bus.CLK);
+        bus.A   = tx.data;
+        bus.opE = tx.sel_e;
+        bus.opI = tx.sel_i;
+        bus.WR  = tx.wr_en;
+        @(negedge bus.CLK);
         #1;
         sb.predict(tx);
-        WR = 1'b0;
+        bus.WR = 1'b0;
         #1;
-        sb.check(tx, RE, RI);
+        sb.check(tx, bus.sample());
     endtask
 
     task automatic apply_reset();
-        RST = 1'b1;
-        A   = 16'h0000;
-        opE = 2'b00;
-        opI = 2'b00;
-        WR  = 1'b0;
-        repeat (3) @(posedge CLK);
-        RST = 1'b0;
+        bus.RST = 1'b1;
+        bus.set_idle();
+        repeat (3) @(posedge bus.CLK);
+        bus.RST = 1'b0;
         sb.reset();
-        @(posedge CLK);
+        @(posedge bus.CLK);
     endtask
 
     task automatic directed_tests();

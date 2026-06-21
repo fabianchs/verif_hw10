@@ -11,9 +11,16 @@ Incluye transacciones, Tester, Scoreboard y Cover Groups.
 
 `include "Circuito 3/ALU.v"
 
-module tb_ALU;
-    localparam int NUM_RANDOM_TESTS = 160;
+typedef struct packed {
+    bit [15:0] r1;
+    bit [15:0] r2;
+    bit [15:0] flags;
+    bit [5:0]  fl;
+    bit        finp;
+    bit        if_flag;
+} alu_sample_t;
 
+interface alu_if;
     logic        CLK;
     logic        RST;
     logic [15:0] A;
@@ -25,37 +32,73 @@ module tb_ALU;
     logic        ENADi;
     logic [1:0]  WR;
     logic [2:0]  opFL;
-    wire  [15:0] R1;
-    wire  [15:0] R2;
-    wire  [15:0] FLAGS;
-    wire  [5:0]  FL;
-    wire         FINP;
-    wire         IF;
-
-    ALU dut (
-        .CLK(CLK),
-        .RST(RST),
-        .A(A),
-        .V(V),
-        .op(op),
-        .WA(WA),
-        .WB(WB),
-        .WD(WD),
-        .ENADi(ENADi),
-        .WR(WR),
-        .opFL(opFL),
-        .R1(R1),
-        .R2(R2),
-        .FLAGS(FLAGS),
-        .FL(FL),
-        .FINP(FINP),
-        .IF(IF)
-    );
+    logic [15:0] R1;
+    logic [15:0] R2;
+    logic [15:0] FLAGS;
+    logic [5:0]  FL;
+    logic        FINP;
+    logic        IF;
 
     initial begin
         CLK = 1'b0;
         forever #5 CLK = ~CLK;
     end
+
+    task automatic idle_controls();
+        WA    = 1'b0;
+        WB    = 1'b0;
+        WD    = 1'b0;
+        WR    = 2'b00;
+        ENADi = 1'b0;
+    endtask
+
+    task automatic set_idle();
+        A    = 16'h0000;
+        V    = 1'b0;
+        op   = 6'b000000;
+        opFL = 3'b000;
+        idle_controls();
+    endtask
+
+    function automatic alu_sample_t sample();
+        sample.r1      = R1;
+        sample.r2      = R2;
+        sample.flags   = FLAGS;
+        sample.fl      = FL;
+        sample.finp    = FINP;
+        sample.if_flag = IF;
+    endfunction
+
+    modport dut (
+        input  CLK, RST, A, V, op, WA, WB, WD, WR, ENADi, opFL,
+        output R1, R2, FLAGS, FL, FINP, IF
+    );
+endinterface
+
+module tb_ALU;
+    localparam int NUM_RANDOM_TESTS = 160;
+
+    alu_if bus();
+
+    ALU dut (
+        .CLK(bus.CLK),
+        .RST(bus.RST),
+        .A(bus.A),
+        .V(bus.V),
+        .op(bus.op),
+        .WA(bus.WA),
+        .WB(bus.WB),
+        .WD(bus.WD),
+        .ENADi(bus.ENADi),
+        .WR(bus.WR),
+        .opFL(bus.opFL),
+        .R1(bus.R1),
+        .R2(bus.R2),
+        .FLAGS(bus.FLAGS),
+        .FL(bus.FL),
+        .FINP(bus.FINP),
+        .IF(bus.IF)
+    );
 
     class alu_tx;
         rand bit [15:0] opa;
@@ -220,27 +263,27 @@ module tb_ALU;
             flags_model[15] = 1'b0;
         endfunction
 
-        function void check(input alu_tx tx, input bit [15:0] actual_r1, input bit [15:0] actual_flags);
+        function void check(input alu_tx tx, input alu_sample_t actual);
             bit [15:0] exp_r1;
 
             exp_r1 = expected_result(tx);
             checks++;
 
-            if (actual_r1 !== exp_r1) begin
+            if (actual.r1 !== exp_r1) begin
                 errors++;
                 $error("[SCOREBOARD][R1] op=%06b A=%04h B=%04h esperado=%04h obtenido=%04h",
-                       tx.opcode, tx.opa, tx.opb, exp_r1, actual_r1);
+                       tx.opcode, tx.opa, tx.opb, exp_r1, actual.r1);
             end
 
             update_flags(tx, exp_r1);
 
-            if (actual_flags[0] !== flags_model[0] ||
-                actual_flags[6] !== flags_model[6] ||
-                actual_flags[7] !== flags_model[7]) begin
+            if (actual.flags[0] !== flags_model[0] ||
+                actual.flags[6] !== flags_model[6] ||
+                actual.flags[7] !== flags_model[7]) begin
                 errors++;
                 $error("[SCOREBOARD][FLAGS] esperado CF/ZF/SF=%0b/%0b/%0b obtenido=%0b/%0b/%0b",
                        flags_model[0], flags_model[6], flags_model[7],
-                       actual_flags[0], actual_flags[6], actual_flags[7]);
+                       actual.flags[0], actual.flags[6], actual.flags[7]);
             end
         endfunction
     endclass
@@ -264,9 +307,9 @@ module tb_ALU;
         endtask
     endclass
 
-    covergroup cg_alu @(posedge CLK);
+    covergroup cg_alu @(posedge bus.CLK);
         option.per_instance = 1;
-        cp_op: coverpoint op {
+        cp_op: coverpoint bus.op {
             bins alu1[] = {
                 6'b000000, 6'b000001, 6'b000010, 6'b000011,
                 6'b000100, 6'b000101, 6'b000110, 6'b000111
@@ -276,19 +319,19 @@ module tb_ALU;
                 6'b001110, 6'b001111
             };
         }
-        cp_wr: coverpoint WR {
+        cp_wr: coverpoint bus.WR {
             bins none = {2'b00};
             bins basic = {2'b01};
             bins full = {2'b10};
             bins load_basic = {2'b11};
         }
-        cp_opa: coverpoint A {
+        cp_opa: coverpoint bus.A {
             bins zero = {16'h0000};
             bins ones = {16'hFFFF};
             bins sign_edge = {16'h7FFF, 16'h8000};
             bins others = default;
         }
-        cp_flags: coverpoint {FLAGS[0], FLAGS[6], FLAGS[7]} {
+        cp_flags: coverpoint {bus.FLAGS[0], bus.FLAGS[6], bus.FLAGS[7]} {
             bins flag_states[] = {[3'b000:3'b111]};
         }
         x_op_flags: cross cp_op, cp_wr;
@@ -300,20 +343,16 @@ module tb_ALU;
     cg_alu cov;
 
     task automatic idle_controls();
-        WA = 1'b0;
-        WB = 1'b0;
-        WD = 1'b0;
-        WR = 2'b00;
-        ENADi = 1'b0;
+        bus.idle_controls();
     endtask
 
     task automatic load_reg(input bit wa, input bit wb, input bit wd, input bit [15:0] value);
-        @(posedge CLK);
-        A  = value;
-        WA = wa;
-        WB = wb;
-        WD = wd;
-        @(negedge CLK);
+        @(posedge bus.CLK);
+        bus.A  = value;
+        bus.WA = wa;
+        bus.WB = wb;
+        bus.WD = wd;
+        @(negedge bus.CLK);
         #1;
         idle_controls();
     endtask
@@ -323,30 +362,26 @@ module tb_ALU;
         load_reg(1'b0, 1'b1, 1'b0, tx.opb);
         load_reg(1'b0, 1'b0, 1'b1, tx.opd);
 
-        @(posedge CLK);
-        A      = tx.opa;
-        V      = tx.carry_in;
-        op     = tx.opcode;
-        WR     = tx.wr_flags;
-        opFL   = tx.op_flags;
-        ENADi  = 1'b0;
-        @(negedge CLK);
+        @(posedge bus.CLK);
+        bus.A     = tx.opa;
+        bus.V     = tx.carry_in;
+        bus.op    = tx.opcode;
+        bus.WR    = tx.wr_flags;
+        bus.opFL  = tx.op_flags;
+        bus.ENADi = 1'b0;
+        @(negedge bus.CLK);
         #2;
-        sb.check(tx, R1, FLAGS);
+        sb.check(tx, bus.sample());
         idle_controls();
     endtask
 
     task automatic apply_reset();
-        RST   = 1'b1;
-        A     = 16'h0000;
-        V     = 1'b0;
-        op    = 6'b000000;
-        opFL  = 3'b000;
-        idle_controls();
-        repeat (3) @(posedge CLK);
-        RST = 1'b0;
+        bus.RST = 1'b1;
+        bus.set_idle();
+        repeat (3) @(posedge bus.CLK);
+        bus.RST = 1'b0;
         sb.reset();
-        @(posedge CLK);
+        @(posedge bus.CLK);
     endtask
 
     task automatic directed_tests();
